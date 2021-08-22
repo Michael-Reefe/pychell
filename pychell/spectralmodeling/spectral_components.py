@@ -1,3 +1,6 @@
+# Base Python
+import glob
+
 # Maths
 import numpy as np
 from scipy.special import eval_legendre
@@ -16,36 +19,13 @@ from optimize.knowledge import BoundedParameters, BoundedParameter
 
 class SpectralComponent(Model):
     """Base class for a general spectral component model.
-
-    Attributes:
-        blueprint (dict): The blueprints to construct this component from.
-        order_num (int): The image order number.
-        enabled (bool): Whether or not this model is enabled.
-        n_delay (int): The number of iterations to delay this model component.
-        base_par_names (str): The base parameter names of the parameters for this model.
-        par_names (str): The full parameter names are name + _ + base_par_names.
     """
 
     ###############################
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
-        """ Base initialization for a model component.
-
-        Args:
-            blueprint (dict): The blueprints to construct this component from.
-            order_num (int): The image order number.
-        """
-        
-        # The order number for this model
-        self.order_num = order_num
-        
-        # The spectral region
-        self.sregion = sregion
-        
-        # Store the blueprint
-        self.blueprint = blueprint
+    def __init__(self):
 
         # No parameter names, probably overwritten with each instance
         self.base_par_names = []
@@ -58,22 +38,20 @@ class SpectralComponent(Model):
     #### INITIALIZE ####
     ####################
 
-    def initialize(self, p0, data, templates_dict, iter_index=None):
-        """Initializes this model, does nothing.
-        """
+    def initialize(self, spectral_model, iter_index=None):
         pass
 
     def lock_pars(self, pars):
         for pname in self.par_names:
             pars[pname].vary = False
+            
+    def vary_pars(self, pars):
+        for pname in self.par_names:
+            pars[pname].vary = True
 
     ###############
     #### MISC. ####
     ###############
-
-    def vary_pars(self, pars):
-        for pname in self.par_names:
-            pars[pname].vary = True
 
     def __repr__(self):
         s = f"Spectral model: {self.name}\n"
@@ -83,30 +61,24 @@ class SpectralComponent(Model):
         return s
 
 class MultModelComponent(SpectralComponent):
-    """ Base class for a multiplicative (or log-additive) spectral component.
-
-    Attributes:
-        wave_bounds (list): The approximate left and right wavelength endpoints of the considered data.
+    """Base class for a multiplicative (or log-additive) spectral component.
     """
     pass
 
 class EmpiricalMult(MultModelComponent):
-    """ Base class for an empirically derived multiplicative (or log-additive) spectral component (i.e., based purely on parameters, no templates involved). As of now, this is purely a node in the Type heirarchy and provides no unique functionality.
+    """ Base class for an empirically derived multiplicative spectral component (i.e., based purely on parameters, no base templates involved).
     """
     pass
 
 class TemplateMult(MultModelComponent):
     """ A base class for a template based multiplicative model.
-
-    Attributes:
-        input_file (str): If provided, stores the full path + filename of the input file.
     """
     
     #############################
     #### CONSTRUCTOR HELPERS ####
     #############################
     
-    def _init_templates(self, *args, **kwargs):
+    def _init_template(self, *args, **kwargs):
         pass
 
 
@@ -124,9 +96,9 @@ class TemplateMult(MultModelComponent):
 #### CONTINUUM MODELS ####
 ##########################
 
-class ContinuumModel(EmpiricalMult):
-    
-    key = "continuum"
+class Continuum(EmpiricalMult):
+    """Base class for a continuum model.
+    """
     
     ###############
     #### MISC. ####
@@ -178,7 +150,7 @@ class ContinuumModel(EmpiricalMult):
                 maskcp = mask_new
         return cont
 
-class PolyContinuum(ContinuumModel):
+class PolyContinuum(Continuum):
     """Blaze transmission model through a polynomial.
     """
     
@@ -188,20 +160,20 @@ class PolyContinuum(ContinuumModel):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
+    def __init__(self, poly_order=4):
+        """Initiate a polynomial continuum model.
+
+        Args:
+            poly_order (int, optional): The order of the polynomial. Defaults to 4.
+        """
         
         # Super
-        super().__init__(blueprint, sregion, order_num)
+        super().__init__()
         
         # The polynomial order
-        self.poly_order = self.blueprint['poly_order']
-        self.n_poly_pars = self.poly_order + 1
-        
-        # The middle of the order
-        self.wave_mid = self.sregion.midwave()
+        self.poly_order = poly_order
             
         # Parameter names
-        self.base_par_names = []
         for i in range(self.n_poly_pars):
             self.base_par_names.append(f"_poly_{i}")
                 
@@ -241,15 +213,8 @@ class PolyContinuum(ContinuumModel):
         
         return poly_cont
 
-class SplineContinuum(ContinuumModel):
+class SplineContinuum(Continuum):
     """  Blaze transmission model through a polynomial and/or splines, ideally used after a flat field correction or after remove_continuum but not required.
-    
-
-    Attributes:
-        poly_order (int): The polynomial order.
-        n_splines (int): The number of wavelength splines.
-        blaze_wave_estimate (bool): The estimate of the blaze wavelegnth. If not provided, defaults to the average of the wavelength grid provided in the build method.
-        spline_set_points (np.ndarray): The location of the spline knots.
     """
     
     name = "spline_continuum"
@@ -258,31 +223,36 @@ class SplineContinuum(ContinuumModel):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
+    def __init__(self, n_splines=6, spline=[0.3, 1.0, 1.2]):
+        """Initiate a spline continuum model.
+
+        Args:
+            n_splines (int, optional): The number of splines. The number of knots (parameters) is equal to n_splines + 1. Defaults to 6.
+            spline (list, optional): The lower bound, starting value, and upper bound. Defaults to [0.3, 1.0, 1.2].
+        """
         
         # Super
-        super().__init__(blueprint, sregion, order_num)
+        super().__init__()
 
         # The number of spline knots is n_splines + 1
-        self.n_splines = self.blueprint['n_splines']
-
-        # The wavelength zero points for each knot
-        self.spline_wave_set_points = np.linspace(self.sregion.wavemin, self.sregion.wavemax, num=self.n_splines + 1)
+        self.n_splines = n_splines
+        
+        # The range for each spline
+        self.spline = spline
 
         # Set the spline parameter names and knots
         for i in range(self.n_splines+1):
-            self.base_par_names.append('_spline_' + str(i+1))
+            self.base_par_names.append(f"_spline_{i+1}")
 
         self.par_names = [self.name + s for s in self.base_par_names]
-
 
     def _init_parameters(self, data):
         pars = BoundedParameters()
         for ispline in range(self.n_splines + 1):
-            pars[self.par_names[ispline]] = BoundedParameter(value=self.blueprint['spline_lagrange'][1],
+            pars[self.par_names[ispline]] = BoundedParameter(value=1.0,
                                                              vary=True,
-                                                             lower_bound=self.blueprint['spline_lagrange'][0],
-                                                             upper_bound=self.blueprint['spline_lagrange'][2])
+                                                             lower_bound=0.25,
+                                                             upper_bound=1.2)
         return pars
     
     
@@ -299,6 +269,14 @@ class SplineContinuum(ContinuumModel):
         spline_cont = pcmath.cspline_interp(self.spline_wave_set_points, spline_pars, wave_final)
         
         return spline_cont
+    
+    
+    ####################
+    #### INITIALIZE ####
+    ####################
+    
+    def initialize(self, spectral_model, iter_index=None):
+        self.spline_wave_set_points = np.linspace(spectral_model.sregion.wavemin, spectral_model.sregion.wavemax, num=self.n_splines + 1)
 
 
 #########################
@@ -306,35 +284,33 @@ class SplineContinuum(ContinuumModel):
 #########################
 
 class GasCell(TemplateMult):
-    """ A gas cell model.
+    """A base class for a gas cell model.
     """
-    
-    key = "gas_cell"
     
     ###############################
     #### CONSTRUCTOR + HELPERS ####
     ###############################
     
-    def __init__(self, blueprint, sregion, order_num):
+    def __init__(self, input_file):
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num)
+        super().__init__()
         
-        self.input_file = self.blueprint["input_file"]
+        self.input_file = input_file
         
-    def _init_templates(self, data, templates_path, model_dl):
+    def _init_template(self, data, sregion, model_dl):
         print('Loading Gas Cell Template', flush=True)
         pad = 5
-        template = np.load(templates_path + self.input_file)
+        template = np.load(self.input_file)
         wave, flux = template['wave'], template['flux']
-        good = np.where((wave > self.sregion.wavemin - pad) & (wave < self.sregion.wavemax + pad))[0]
+        good = np.where((wave > sregion.wavemin - pad) & (wave < sregion.wavemax + pad))[0]
         wave, flux = wave[good], flux[good]
         flux /= pcmath.weighted_median(flux, percentile=0.999)
         template = np.array([wave, flux]).T
         return template
 
 class DynamicGasCell(GasCell):
-    """ A gas cell model which is consistent across orders.
+    """A dynamic gas cell model allowing for a depth and shift.
     """
     
     name = "dynamic_gas_cell"
@@ -343,25 +319,30 @@ class DynamicGasCell(GasCell):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
+    def __init__(self, input_file=None, shift=[0, 0, 0], depth=[1, 1, 1]):
+        """Initiate a dynamic gas cell model.
+
+        Args:
+            input_file ([type], optional): The full path to the gas cell template. Defaults to None.
+            shift (list, optional): The lower bound, starting value, and upper bound for the gas cell shift in Angstroms. Defaults to [0, 0, 0].
+            depth (list, optional): The lower bound, starting value, and upper bound for the gas cell depth. Defaults to [1, 1, 1].
+        """
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num)
+        super().__init__(input_file=input_file)
+        
+        self.shift = shift
+        self.depth = depth
 
-        self.base_par_names = ['_shift', '_depth']
+        self.base_par_names += ['_shift', '_depth']
         self.par_names = [self.name + s for s in self.base_par_names]
 
     def _init_parameters(self, data):
         pars = BoundedParameters()
-        pars[self.par_names[0]] = BoundedParameter(value=self.blueprint['shift'][1],
-                                                       vary=True,
-                                                       lower_bound=self.blueprint['shift'][0],
-                                                       upper_bound=self.blueprint['shift'][2])
-        
-        pars[self.par_names[1]] = BoundedParameter(value=self.blueprint['depth'][1],
-                                                       vary=True,
-                                                       lower_bound=self.blueprint['depth'][0],
-                                                       upper_bound=self.blueprint['depth'][2])
+        pars[self.par_names[0]] = BoundedParameter(value=self.shift[1], vary=True,
+                                                   lower_bound=self.shift[0], upper_bound=self.shift[2])
+        pars[self.par_names[1]] = BoundedParameter(value=self.depth[1], vary=True,
+                                                   lower_bound=self.depth[0], upper_bound=self.depth[2])
         
         return pars
 
@@ -377,7 +358,7 @@ class DynamicGasCell(GasCell):
         return pcmath.cspline_interp(wave, flux, wave_final)
 
 class PerfectGasCell(GasCell):
-    """ A gas cell model which is consistent across orders.
+    """A perfect gas cell model (no modifications).
     """
     
     name = "perfect_gascell"
@@ -396,18 +377,12 @@ class PerfectGasCell(GasCell):
 #####################
 
 class Star(TemplateMult):
-    """ A star model which may or may not have started from a synthetic template.
-    
-    Attr:
-        from_synthetic (bool): Whether or not this model started from a synthetic template or not.
+    """A base class for a star model.
     """
-    key = "star"
+    pass
 
 class AugmentedStar(Star):
-    """ A star model which did not start from a synthetic template.
-
-    Attr:
-        from_synthetic (bool): Whether or not this model started from a synthetic template or not.
+    """ A star model which may be augmented after each iteration according to the augmenter attribute in the SpectralRVProb object.
     """
     
     name = "augmented_star"
@@ -416,39 +391,36 @@ class AugmentedStar(Star):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
+    def __init__(self, input_file=None):
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num)
+        super().__init__()
+        
+        # Input file
+        self.input_file = input_file
         
         # Whether or not the star is from a synthetic source
-        if "input_file" in self.blueprint and self.blueprint["input_file"] is not None:
-            self.from_flat = False
-            self.input_file = self.blueprint["input_file"]
-        else:
-            self.from_flat = True
+        self.from_flat = True if self.input_file is None else False
 
         # Pars
-        self.base_par_names = ['_vel']
+        self.base_par_names += ['_vel']
         
         # Update parameter names
         self.par_names = [self.name + s for s in self.base_par_names]
 
     def _init_parameters(self, data):
         pars = BoundedParameters()
-        pars[self.par_names[0]] = BoundedParameter(value=self.blueprint['vel'][1],
-                                                       vary=True,
-                                                       lower_bound=self.blueprint['vel'][0],
-                                                       upper_bound=self.blueprint['vel'][2])
+        pars[self.par_names[0]] = BoundedParameter(value=100, vary=True,
+                                                   lower_bound=-3E5, upper_bound=3E5)
     
         return pars
         
-    def _init_templates(self, data, templates_path, model_dl):
+    def _init_template(self, data, sregion, model_dl):
         pad = 15
-        wave_uniform = np.arange(self.sregion.wavemin - pad, self.sregion.wavemax + pad, model_dl)
+        wave_uniform = np.arange(sregion.wavemin - pad, sregion.wavemax + pad, model_dl)
         if not self.from_flat:
             print("Loading Stellar Template", flush=True)
-            template_raw = np.loadtxt(templates_path + self.input_file, delimiter=',')
+            template_raw = np.loadtxt(self.input_file, delimiter=',')
             wave, flux = template_raw[:, 0], template_raw[:, 1]
             flux_interp = pcmath.cspline_interp(wave, flux, wave_uniform)
             flux_interp /= pcmath.weighted_median(flux_interp, percentile=0.999)
@@ -473,12 +445,12 @@ class AugmentedStar(Star):
     #### INITIALIZE ####
     ####################
     
-    def initialize(self, p0, data, templates_dict, iter_index=None):
+    def initialize(self, spectral_model, iter_index=None):
         if iter_index == 0 and self.from_flat:
-            p0[self.par_names[0]].vary = False
+            spectral_model.p0[self.par_names[0]].vary = False
         elif iter_index == 1 and self.from_flat:
-            p0[self.par_names[0]].vary = True
-            p0[self.par_names[0]].value = -1 * data.bc_vel
+            spectral_model.p0[self.par_names[0]].vary = True
+            spectral_model.p0[self.par_names[0]].value = -1 * data.bc_vel
 
 
 #########################
@@ -486,69 +458,76 @@ class AugmentedStar(Star):
 #########################
 
 class Tellurics(TemplateMult):
-    key = "tellurics"
+    """A base class for tellurics.
+    """
     pass
 
 class TelluricsTAPAS(Tellurics):
-    """ A telluric model based on Templates obtained from TAPAS. These templates should be pre-fetched from TAPAS and specific to the observatory. Only water has a unique depth, with all others being identical. The model uses a common Doppler shift.
-
-    Attributes:
-        species (list): The names (strings) of the telluric species.
-        n_species (int): The number of telluric species.
-        species_enabled (dict): A dictionary with species as keys, and boolean values for items (True=enabled, False=disabled)
-        species_input_files (list): A list of input files (strings) for the individual species.
+    """A telluric model based on templates obtained from TAPAS which are specific to a certain observatory (or generate site such as Maunakea). These templates should be pre-fetched from TAPAS and specific to the site. CH4, N20, CO2, O2, and O3 utilize a common depth parameter. H2O utilizes a unique depth. All species utilize a common Doppler shift.
     """
     
     name = "tapas_tellurics"
+    species = ['water', 'methane', 'carbon_dioxide', 'nitrous_oxide', 'oxygen', 'ozone']
     
     ###############################
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
-        super().__init__(blueprint, sregion, order_num)
+    def __init__(self, input_path, location_tag, feature_depth=0.02, vel=[-300, 50, 300], water_depth=[0.05, 1.1, 5.0], airmass_depth=[0.8, 1.1, 3.0]):
+        """Initiate a TAPAS telluric model.
 
-        self.base_par_names = ['_vel', '_water_depth', '_airmass_depth']
-        self.species = ['water', 'methane', 'carbon_dioxide', 'nitrous_oxide', 'oxygen', 'ozone']
-        self.species_input_files = self.blueprint['input_files']
+        Args:
+            input_path (str): The full path to the directory containing the six speciesn files.
+            location_tag (str): The location tag present in the filename for each species.
+            feature_depth (float, optional): If a set of templates (water, everything else) has a dynamic range of less than feature_depth, that set is ignored. Defaults to 0.02 (2 percent).
+            vel (list, optional): The lower bound, starting value, and upper bound for the telluric shift in m/s. Defaults to [-300, 50, 300].
+            water_depth (list, optional): The lower bound, starting value, and upper bound for the water depth. Defaults to [0.05, 1.1, 5.0].
+            airmass_depth (list, optional): The lower bound, starting value, and upper bound for the species which correlate well with airmass (everything but water). Defaults to [0.8, 1.1, 3.0].
+        """
+        super().__init__()
+        self.input_path = input_path
+        self.location_tag = location_tag
+        self.vel = vel
+        self.water_depth = water_depth
+        self.airmass_depth = airmass_depth
+        self.base_par_names += ['_vel', '_water_depth', '_airmass_depth']
         self.has_water_features, self.has_airmass_features = True, True
-        self.feature_depth = self.blueprint['feature_depth']
+        self.feature_depth = feature_depth
         self.par_names = [self.name + s for s in self.base_par_names]
+        
+        # Input files
+        self.species_input_files = {species: f"{self.input_path}telluric_{species}_tapas_{self.location_tag}.npz" for species in self.species}
 
     def _init_parameters(self, data):
         
         pars = BoundedParameters()
         
         # Velocity
-        pars[self.par_names[0]] = BoundedParameter(value=self.blueprint['vel'][1],
-                                                       vary=(self.has_water_features or self.has_airmass_features),
-                                                       lower_bound=self.blueprint['vel'][0],
-                                                       upper_bound=self.blueprint['vel'][2])
+        pars[self.par_names[0]] = BoundedParameter(value=self.vel[1],
+                                                   vary=(self.has_water_features or self.has_airmass_features),
+                                                   lower_bound=self.vel[0], upper_bound=self.vel[2])
         
         # Water Depth
-        pars[self.par_names[1]] = BoundedParameter(value=self.blueprint['water_depth'][1],
-                                                       vary=self.has_water_features,
-                                                       lower_bound=self.blueprint['water_depth'][0],
-                                                       upper_bound=self.blueprint['water_depth'][2])
+        pars[self.par_names[1]] = BoundedParameter(value=self.water_depth[1],
+                                                   vary=self.has_water_features,
+                                                   lower_bound=self.water_depth[0], upper_bound=self.water_depth[2])
         
         # Remaining Components
-        pars[self.par_names[2]] = BoundedParameter(value=self.blueprint['airmass_depth'][1],
-                                                       vary=self.has_airmass_features,
-                                                       lower_bound=self.blueprint['airmass_depth'][0],
-                                                       upper_bound=self.blueprint['airmass_depth'][2])
+        pars[self.par_names[2]] = BoundedParameter(value=self.airmass_depth[1],
+                                                   vary=self.has_airmass_features,
+                                                   lower_bound=self.airmass_depth[0], upper_bound=self.airmass_depth[2])
         
         return pars
 
-    def _init_templates(self, data, templates_path, model_dl):
+    def _init_template(self, data, sregion, model_dl):
         print('Loading Telluric Templates', flush=True)
-        
         # Pad
         pad = 5
         
         # Water
-        water = np.load(templates_path + self.species_input_files['water'])
+        water = np.load(self.species_input_files['water'])
         wave, flux = water['wave'], water['flux']
-        good = np.where((wave > self.sregion.wavemin - pad) & (wave < self.sregion.wavemax + pad))[0]
+        good = np.where((wave > sregion.wavemin - pad) & (wave < sregion.wavemax + pad))[0]
         wave_water, flux_water = wave[good], flux[good]
         templates = np.zeros(shape=(wave_water.size, 3), dtype=float)
         templates[:, 0] = wave_water
@@ -561,9 +540,9 @@ class TelluricsTAPAS(Tellurics):
         for species in self.species:
             if species == 'water':
                 continue
-            tell = np.load(templates_path + self.species_input_files[species])
+            tell = np.load(self.species_input_files[species])
             wave, _flux = tell['wave'], tell['flux']
-            good = np.where((wave > self.sregion.wavemin - pad) & (wave < self.sregion.wavemax + pad))[0]
+            good = np.where((wave > sregion.wavemin - pad) & (wave < sregion.wavemax + pad))[0]
             wave, _flux = wave[good], _flux[good]
             flux_airmass *= pcmath.cspline_interp(wave, _flux, wave_water)
             
@@ -603,6 +582,17 @@ class TelluricsTAPAS(Tellurics):
             flux = templates[:, 2]**depth
         return flux
         
+# class TelluricsDev(Tellurics):
+#     pass
+
+#    def __init__(self, input_path, feature_depth=0.01, ):
+#        pass
+
+#    def build(self, pars):
+#        pass
+
+#    def initialize(self, pars):
+#        pass
 
 ####################
 #### LSF MODELS ####
@@ -610,28 +600,16 @@ class TelluricsTAPAS(Tellurics):
 
 class LSF(SpectralComponent):
     """ A base class for an LSF (line spread function) model.
-
-    Attributes:
-        dl (float): The step size of the high resolution fidicual wavelength grid the model is convolved on. Must be evenly spaced.
-        nx_model (float): The number of model pixels in the high resolution fidicual wavelength grid.
-        nx (int): The number of points in the lsf grid.
-        x (np.ndarray): The lsf grid.
-        default_lsf (np.ndarray): The default LSF to use or start from. Defaults to None.
     """
-    
-    key = "lsf"
     
     ###############################
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num, model_dl):
+    def __init__(self):
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num)
-        
-        # Model wavelength grid step size
-        self.model_dl = model_dl
+        super().__init__()
 
     ##################
     #### BUILDERS ####
@@ -648,10 +626,7 @@ class LSF(SpectralComponent):
         return convolved_flux
             
 class HermiteLSF(LSF):
-    """ A Hermite Gaussian LSF model. The model is a sum of Gaussians of constant width and Hermite Polynomial coefficients.
-
-    Attributes:
-        hermdeg (int): The degree of the hermite model. Zero corresponds to a pure Gaussian.
+    """A Hermite Gaussian LSF model. The model is a sum of Gaussians of constant width with Hermite Polynomial coefficients to enforce orthogonality. See Arfken et al. for more details.
     """
     
     name = "hermite_lsf"
@@ -660,20 +635,22 @@ class HermiteLSF(LSF):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num, model_dl):
+    def __init__(self, hermdeg=0, width=None, hermcoeff=[-0.1, 0.01, 0.1]):
+        """Initate a Hermite LSF model.
+
+        Args:
+            hermdeg (int, optional): The degree of the Hermite polynomials. Defaults to 0, which is identical to a standard Gaussian.
+            width (float, optional): The lower bound, starting value, and upper bound of the LSF width in Angstroms. Defaults to None.
+            hermcoeff (list, optional): The lower bound, starting value, and upper bound for each Hermite polynomial coefficient. Defaults to [-0.1, 0.01, 0.1].
+        """
 
         # Call super
-        super().__init__(blueprint, sregion, order_num, model_dl)
+        super().__init__()
 
         # The Hermite degree
-        self.hermdeg = self.blueprint['hermdeg']
-        
-        # The x grid
-        self.nx = self.blueprint["nx"]
-        self.x = np.arange(int(-self.nx / 2), int(self.nx / 2) + 1) * self.model_dl
-        
-        # Build the lsf to estimate where it is small in flux
-        self.n_pad_model = int(np.floor(self.nx / 2))
+        self.hermdeg = hermdeg
+        self.width = width
+        self.hermcoeff = hermcoeff
 
         # Width
         self.base_par_names = ['_width']
@@ -682,23 +659,34 @@ class HermiteLSF(LSF):
             self.base_par_names.append('_a' + str(k+1))
         self.par_names = [self.name + s for s in self.base_par_names]
 
-
     def _init_parameters(self, data):
         pars = BoundedParameters()
-        pars[self.par_names[0]] = BoundedParameter(value=self.blueprint['width'][1],
-                                                   vary=True,
-                                                   lower_bound=self.blueprint['width'][0],
-                                                   upper_bound=self.blueprint['width'][2])
+        pars[self.par_names[0]] = BoundedParameter(value=self.width[1], vary=True,
+                                                   lower_bound=self.width[0], upper_bound=self.width[2])
         for i in range(self.hermdeg):
-            pars[self.par_names[i+1]] = BoundedParameter(value=self.blueprint['ak'][1],
-                                                                 vary=True,
-                                                                 lower_bound=self.blueprint['ak'][0],
-                                                                 upper_bound=self.blueprint['ak'][2])
+            pars[self.par_names[i+1]] = BoundedParameter(value=self.hermcoeff[1], vary=True,
+                                                         lower_bound=self.hermcoeff[0], upper_bound=self.hermcoeff[2])
             
         return pars
     
     
-
+    ####################
+    #### INITIALIZE ####
+    ####################
+    
+    def initialize(self, spectral_model, iter_index=None):
+        nx = spectral_model.data.flux.size
+        self.x = np.arange(int(-nx / 2), int(nx / 2) + 1)
+        lsf_init = self.build(spectral_model.p0)
+        lsf_init /= np.nanmax(lsf_init) # norm to max
+        good = np.where(lsf_init > 1E-10)[0]
+        x_min, x_max = good.min(), good.max()
+        nx = int(2 * np.max([np.abs(x_min), x_max])) # or +/- 1
+        if nx % 2 == 0:
+            nx += 1
+        self.x = np.arange(int(-nx / 2), int(nx / 2) + 1) * spectral_model.model_dl
+        self.n_pad_model = int(np.floor(self.x.size / 2))
+    
     ##################
     #### BUILDERS ####
     ##################
@@ -715,64 +703,11 @@ class HermiteLSF(LSF):
         lsf /= np.nansum(lsf)
         return lsf
 
-class ModGaussLSF(LSF):
-    """ A Modified Gaussian LSF model.
-    """
-    
-    name = "modgauss_lsf"
-    
-    ###############################
-    #### CONSTRUCTOR + HELPERS ####
-    ###############################
-
-    def __init__(self, blueprint, sregion, order_num):
-
-        # Call super
-        super().__init__(blueprint, sregion, order_num)
-
-        self.base_par_names = ['_width', '_p']
-        self.par_names = [self.name + s for s in self.base_par_names]
-
-
-    def _init_parameters(self, data):
-        pars = BoundedParameters()
-        pars[self.par_names[0]] = BoundedParameter(value=self.blueprint['width'][1],
-                                                       vary=True,
-                                                       lower_bound=self.blueprint['width'][0],
-                                                       upper_bound=self.blueprint['width'][2])
-        pars[self.par_names[1]] = BoundedParameter(value=self.blueprint['p'][1],
-                                                       vary=True,
-                                                       lower_bound=self.blueprint['p'][0],
-                                                       upper_bound=self.blueprint['p'][2])
-        
-        return pars
-
-
-    ##################
-    #### BUILDERS ####
-    ##################
-
-    def build(self, pars):
-        width = pars[self.par_names[0]].value
-        p = pars[self.par_names[1]].value
-        lsf = np.exp(-0.5 * np.abs(self.x / width)**p)
-        lsf /= np.nansum(lsf)
-        return lsf
-
 class PerfectLSF(LSF):
-    """ A container for an LSF known a priori.
-    
-    Attr:
-        default_lsf (np.ndarray): The default LSF model to use.
+    """A model for a perect LSF (known a priori).
     """
     
     name = "perfect_lsf"
-
-    def __init__(self, blueprint, sregion, order_num):
-
-        super().__init__(blueprint, sregion, order_num)
-        self.base_par_names = []
-        self.par_names = []
 
     def build(self, pars=None):
         return self.default_lsf
@@ -787,32 +722,12 @@ class PerfectLSF(LSF):
 ####################
 
 class WavelengthSolution(SpectralComponent):
-    """ A base class for a wavelength solution (i.e., conversion from pixels to wavelength).
-
-    Attributes:
-        pix_bounds (list): The left and right pixel bounds which correspond to wave_bounds.
-        nx (int): The total number of data pixels.
-        default_wave_grid (np.ndarray): The default wavelength grid to use or start from.
+    """A base class for a wavelength solution (conversion from pixels to wavelength).
     """
-    
-    key = "wavelength_solution"
-    
-    def __init__(self, blueprint, sregion, order_num, wls_estimate):
-        
-        super().__init__(blueprint, sregion, order_num)
-        
-        self.wls_estimate = wls_estimate
-        self.nx = len(self.wls_estimate)
+    pass
 
 class PolyWavelengthSolution(WavelengthSolution):
-    """ Class for a full wavelength solution defined through cubic splines.
-
-    Attributes:
-        poly_order (int): The polynomial order.
-        n_splines (int): The number of wavelength splines.
-        quad_pixel_set_points (np.ndarray): The three pixel points to use as set points in the quadratic.
-        quad_wave_zero_points (np.ndarray): Estimates of the corresonding zero points of quad_pixel_set_points.
-        spline_pixel_set_points (np.ndarray): The location of the spline knots in pixel space.
+    """A polynomial wavelength solution model. Instead of optimizing coefficients, the model utilizes set points which are evenly spaced across the spectral range in pixel space.
     """
     
     name = "poly_wls"
@@ -821,24 +736,23 @@ class PolyWavelengthSolution(WavelengthSolution):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num, wls_estimate):
+    def __init__(self, poly_order=2, set_point=[-0.5, 0.05, 0.5]):
+        """Initiate a polynomial wavelength solution model.
+
+        Args:
+            poly_order (int, optional): The order of the polynomial. Defaults to 2.
+            set_point (list, optional): The window for each point in Angstroms.
+        """
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num, wls_estimate)
+        super().__init__()
         
         # The polynomial order
-        self.poly_order = self.blueprint['poly_order']
-        self.n_poly_pars = self.poly_order + 1
-            
-        # Parameter names
-        self.base_par_names = []
-        
-        # Polynomial lagrange points
-        self.poly_pixel_lagrange_points = np.linspace(self.sregion.pixmin, self.sregion.pixmax, num=self.n_poly_pars).astype(int)
-        self.poly_wave_lagrange_zero_points = wls_estimate[self.poly_pixel_lagrange_points]
+        self.poly_order = poly_order
+        self.set_point = set_point
         
         # Base parameter names
-        for i in range(self.n_poly_pars):
+        for i in range(self.poly_order + 1):
             self.base_par_names.append('_poly_lagrange_' + str(i + 1))
                 
         # Parameter names
@@ -847,11 +761,11 @@ class PolyWavelengthSolution(WavelengthSolution):
     def _init_parameters(self, data):
         pars = BoundedParameters()
         # Poly parameters
-        for i in range(self.n_poly_pars):
-            pars[self.par_names[i]] = BoundedParameter(value=self.blueprint["poly_wave_lagrange"][1],
+        for i in range(self.poly_order + 1):
+            pars[self.par_names[i]] = BoundedParameter(value=self.set_point[1],
                                                        vary=True,
-                                                       lower_bound=self.blueprint['poly_wave_lagrange'][0],
-                                                       upper_bound=self.blueprint['poly_wave_lagrange'][2])
+                                                       lower_bound=self.set_point[0],
+                                                       upper_bound=self.set_point[1])
         return pars
 
 
@@ -863,12 +777,15 @@ class PolyWavelengthSolution(WavelengthSolution):
         
         # The detector grid
         pixel_grid = np.arange(self.nx)
+        
+        # The number of parameters
+        n_pars = self.poly_order + 1
             
         # Offsets for each Lagrange point
-        poly_lagrange_pars = np.array([pars[self.par_names[i]].value for i in range(self.n_poly_pars)])
+        poly_lagrange_pars = np.array([pars[self.par_names[i]].value for i in range(n_pars)])
         
         # Get the coefficients
-        V = np.vander(self.poly_pixel_lagrange_points, N=self.n_poly_pars)
+        V = np.vander(self.poly_pixel_lagrange_points, N=n_pars)
         Vinv = np.linalg.inv(V)
         coeffs = np.dot(Vinv, self.poly_wave_lagrange_zero_points + poly_lagrange_pars)
     
@@ -876,16 +793,21 @@ class PolyWavelengthSolution(WavelengthSolution):
         poly_wave = np.polyval(coeffs, pixel_grid)
         
         return poly_wave
+    
+    ####################
+    #### INITIALIZE ####
+    ####################
+    
+    def initialize(self, spectral_model, iter_index=None):
+        self.poly_pixel_lagrange_points = np.linspace(spectral_model.sregion.pixmin,
+                                                      spectral_model.sregion.pixmax,
+                                                      num=self.poly_order + 1).astype(int)
+        wls_estimate = spectral_model.data.parser.estimate_wavelength_solution(spectral_model.data)
+        self.nx = len(wls_estimate)
+        self.poly_wave_lagrange_zero_points = wls_estimate[self.poly_pixel_lagrange_points]
 
 class SplineWavelengthSolution(WavelengthSolution):
-    """ Class for a full wavelength solution defined through cubic splines.
-
-    Attributes:
-        poly_order (int): The polynomial order.
-        n_splines (int): The number of wavelength splines.
-        quad_pixel_set_points (np.ndarray): The three pixel points to use as set points in the quadratic.
-        quad_wave_zero_points (np.ndarray): Estimates of the corresonding zero points of quad_pixel_set_points.
-        spline_pixel_set_points (np.ndarray): The location of the spline knots in pixel space.
+    """A cubic spline wavelength solution model.
     """
     
     ###############################
@@ -894,33 +816,32 @@ class SplineWavelengthSolution(WavelengthSolution):
     
     name = "spline_wls"
 
-    def __init__(self, blueprint, sregion, order_num, wls_estimate):
+    def __init__(self, n_splines=6, spline=[-0.5, 0.1, 0.5]):
+        """Initiate a spline wavelength solution model.
+
+        Args:
+            n_splines (int, optional): The number of splines to use where the number of knots = n_splines + 1. Defaults to 6.
+            spline (list, optional): The lower bound, starting value, and upper bound for each spline in Angstroms, and relative to the initial wavelength solution provided from the parser object. Defaults to [-0.5, 0.1, 0.5].
+        """
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num, wls_estimate)
+        super().__init__()
         
         # The number of spline knots is n_splines + 1
-        self.n_splines = self.blueprint['n_splines']
-
-        # Parameter names
-        self.base_par_names = []
+        self.n_splines = n_splines
+        self.spline = spline
 
         # Set the spline parameter names and knots
         for i in range(self.n_splines + 1):
-            self.base_par_names.append('_spline_' + str(i + 1))
+            self.base_par_names.append(f"_spline_{i + 1}")
                 
         self.par_names = [self.name + s for s in self.base_par_names]
-        
-        self.spline_pixel_lagrange_points = np.linspace(self.sregion.pixmin, self.sregion.pixmax, num=self.n_splines + 1).astype(int)
-        self.spline_wave_lagrange_zero_points = wls_estimate[self.spline_pixel_lagrange_points]
 
     def _init_parameters(self, data):
         pars = BoundedParameters()
         for i in range(self.n_splines + 1):
-            pars[self.par_names[i]] = BoundedParameter(value=self.blueprint['spline_lagrange'][1],
-                                                       vary=True,
-                                                       lower_bound=self.blueprint['spline_lagrange'][0],
-                                                       upper_bound=self.blueprint['spline_lagrange'][2])
+            pars[self.par_names[i]] = BoundedParameter(value=self.spline[1], vary=True,
+                                                       lower_bound=self.spline[0], upper_bound=self.spline[2])
             
         return pars
 
@@ -942,16 +863,21 @@ class SplineWavelengthSolution(WavelengthSolution):
                                             pixel_grid)
         
         return spline_wave
+    
+    ####################
+    #### INITIALIZE ####
+    ####################
+    
+    def initialize(self, spectral_model, iter_index=None):
+        self.spline_pixel_lagrange_points = np.linspace(spectral_model.sregion.pixmin,
+                                                        spectral_model.sregion.pixmax,
+                                                        num=self.n_splines + 1).astype(int)
+        wls_estimate = spectral_model.data.parser.estimate_wavelength_solution(spectral_model.data)
+        self.nx = len(wls_estimate)
+        self.spline_wave_lagrange_zero_points = wls_estimate[self.spline_pixel_lagrange_points]
 
 class LegPolyWavelengthSolution(WavelengthSolution):
-    """ Class for a full wavelength solution defined through cubic splines.
-
-    Attributes:
-        poly_order (int): The polynomial order.
-        n_splines (int): The number of wavelength splines.
-        quad_pixel_set_points (np.ndarray): The three pixel points to use as set points in the quadratic.
-        quad_wave_zero_points (np.ndarray): Estimates of the corresonding zero points of quad_pixel_set_points.
-        spline_pixel_set_points (np.ndarray): The location of the spline knots in pixel space.
+    """A Legendre polynomial wavelength solution model.
     """
     
     name = "legpoly_wls"
@@ -960,13 +886,18 @@ class LegPolyWavelengthSolution(WavelengthSolution):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num, wls_estimate):
+    def __init__(self, poly_order=4):
+        """Initiate a Legendre polynomial model.
+
+        Args:
+            poly_order (int, optional): The order of the Legendre polynomial. Defaults to 2.
+        """
 
         # Call super method
-        super().__init__(blueprint, sregion, order_num, wls_estimate)
+        super().__init__()
         
         # The polynomial order
-        self.poly_order = blueprint['poly_order']
+        self.poly_order = poly_order
             
         # Parameter names
         self.base_par_names = []
@@ -1013,6 +944,8 @@ class LegPolyWavelengthSolution(WavelengthSolution):
         return wave_sol
 
 class PerfectWavelengthSolution(WavelengthSolution):
+    """A model for a perfect wavelenth solution model (known a priori).
+    """
     
     name = "apriori_wls"
     
@@ -1027,8 +960,8 @@ class PerfectWavelengthSolution(WavelengthSolution):
     #### INITIALIZE ####
     ####################
     
-    def initialize(self, p0, data, templates_dict, iter_index=None):
-        self.data = data
+    def initialize(self, spectral_model, iter_index=None):
+        self.data = spectral_model.data
 
 
 ######################
@@ -1037,22 +970,21 @@ class PerfectWavelengthSolution(WavelengthSolution):
 
 #### Fringing ####
 class FPCavityFringing(EmpiricalMult):
-    """ A basic Fabry-Perot cavity model.
+    """A basic Fabry-Perot cavity model for fringing in spectrographs like iSHELL and NIRSPEC.
     """
     
     name = "fp_fringing"
-    key = "fringing"
     
     ###############################
     #### CONSTRUCTOR + HELPERS ####
     ###############################
 
-    def __init__(self, blueprint, sregion, order_num):
+    def __init__(self):
 
         # Super
-        super().__init__(blueprint, sregion, order_num)
+        super().__init__()
 
-        self.base_par_names = ['_logd', '_fin']
+        self.base_par_names += ['_logd', '_fin']
 
         self.par_names = [self.name + s for s in self.base_par_names]
 

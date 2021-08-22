@@ -16,8 +16,7 @@ import pychell.maths as pcmath
 import pychell.spectralmodeling.rvcalc as pcrvcalc
 import pychell.utils as pcutils
 from pychell.data.spectraldata import SpecData1d
-from pychell.spectralmodeling.composite_spectralmodels import IterativeSpectralForwardModel
-from pychell.spectralmodeling.spectralmodels import SpectralRegion
+from pychell.spectralmodeling.spectralmodels import IterativeSpectralForwardModel
 
 # Plots
 import matplotlib.pyplot as plt
@@ -41,22 +40,34 @@ class IterativeSpectralRVProb(OptProblem):
     #### CONSTRUCTOR + HELPERS ####
     ###############################
     
-    def __init__(self, spectrograph, data_input_path, filelist, blueprints, templates_path, order_num, tag, output_path, target_dict, augmenter=None, bc_corrs=None, crop_pix=[200, 200], n_iterations=10, model_resolution=8, optimizer=None, obj=None, n_cores=1, verbose=True):
+    def __init__(self, spectrograph,
+                 data_input_path, filelist,
+                 spectral_model,
+                 augmenter,
+                 tag, output_path, target_dict,
+                 bc_corrs=None,
+                 optimizer=None, obj=None,
+                 n_cores=1, verbose=True):
+        """Initiate the top level iterative spectral rv problem object.
+
+        Args:
+            spectrograph (str): The name of the spectrograph.
+            data_input_path (str): The full path to the data folder.
+            filelist (str): A text file listing the observations (filenames) within data_input_path to use.
+            spectral_model (IterativeSpectralForwardModel): The spectral model obejct. For now only IterativeSpectralForwardModel is supported.
+            augmenter (TemnplateAugmenter): The template augmenter object.
+            tag (str): A tag to uniquely identify this run in the outputs. The full tag will be spectrograph_tag.
+            output_path (str): The output path. All outputs wioll be stored within a single sub folder within output_path, which will also contain multiple sub folders.
+            target_dict (dict): The information for this target. For now, only the name key is used to generate the barycenter corrections (BJDs and barycenter velocity corrections) using Simbad to obtain the necessary inormation.
+            bc_corrs (np.ndarray, optional): The barycenter corrections may be passed manually as a two column numpy array; shape=(n_observations, 2). Defaults to None and the barycenter correcitons are computed with barycorrpy from information pulled form Simbad.
+            optimizer (Optimizer, optional): The optimizer to use. Defaults to None.
+            obj (SpectralObjective, optional): The objective function to ultimiately extremize. Defaults to None.
+            n_cores (int, optional): The number of cores to use. Defaults to 1.
+            verbose (bool, optional): Whether or not to print additional diagnostics ater each fit. This should be False for long runs. Defaults to True.
+        """
         
         # The number of cores
         self.n_cores = n_cores
-        
-        # The image order (base 1)
-        self.order_num = order_num
-        
-        # The left and right pixels to crop
-        self.crop_pix = crop_pix
-        
-        # The resolution of the model
-        self.model_resolution = model_resolution
-        
-        # Number of iterations
-        self.n_iterations = n_iterations
         
         # Verbose
         self.verbose = verbose
@@ -65,14 +76,11 @@ class IterativeSpectralRVProb(OptProblem):
         self.data_input_path = data_input_path
         self.filelist = filelist
         
-        # Templates path
-        self.templates_path = templates_path
-        
-        # Blueprints
-        self.blueprints = blueprints
-        
         # The base output path
         self.output_path = output_path
+        
+        # The spectral model
+        self.spectral_model = spectral_model
 
         # The spectrogaph
         self.spectrograph = spectrograph
@@ -92,7 +100,7 @@ class IterativeSpectralRVProb(OptProblem):
         self.opt_results = np.empty(shape=(self.n_spec, self.n_iterations), dtype=dict)
         self.stellar_templates = np.empty(self.n_iterations, dtype=np.ndarray)
         
-        # The spectral model
+        # Initialize the spectral model
         self._init_spectral_model()
         self.p0cp = copy.deepcopy(self.p0)
         
@@ -109,29 +117,24 @@ class IterativeSpectralRVProb(OptProblem):
         self.optimizer = optimizer
         
         # Init RVs
-        self._init_rvs()
+        self._init_rvs(bc_corrs=bc_corrs)
         
         # Print summary
         self._print_init_summary()
             
     def _init_data(self):
         
-        # Store all data objects in a list
-        self.data = []
-        
         # List of input files
         input_files = [self.data_input_path + f for f in np.atleast_1d(np.genfromtxt(self.data_input_path + self.filelist, dtype='<U100', comments='#').tolist())]
         
         # Load in each observation for this order
-        for ispec in range(len(input_files)):
-            self.data.append(SpecData1d(input_files[ispec], self.order_num, ispec + 1, self.parser, self.crop_pix))
+        self.data = [SpecData1d(fname, self.order_num, ispec + 1, self.parser, self.crop_pix) for ispec, fname in enumerate(input_files)]
             
         # Estimate the wavelength bounds for this order
         wave_grid = self.parser.estimate_wavelength_solution(self.data[0])
         good = np.where(self.data[0].mask == 1)[0]
         pixmin, pixmax = np.max([good[0] - 5, 0]), np.min([good[-1] + 5, len(self.data[0].mask) - 1])
         wavemin, wavemax = wave_grid[pixmin], wave_grid[pixmax]
-        self.sregion = SpectralRegion(pixmin, pixmax, wavemin, wavemax, label=f"Order {self.order_num}")
 
     def _init_spectrograph(self):
         
@@ -141,21 +144,12 @@ class IterativeSpectralRVProb(OptProblem):
         # Construct the data parser
         parser_class = getattr(spec_module, f"{self.spectrograph}Parser")
         self.parser = parser_class(self.data_input_path, self.output_path)
-        
-        # Update blueprints
-        blueprints = copy.deepcopy(spec_module.spectral_model_blueprints)
-        for user_key in self.blueprints.keys():
-            if user_key in blueprints: # Key is common, update sub keys only
-                blueprints[user_key].update(self.blueprints[user_key])
-            else: # Key is new, just add
-                blueprints[user_key] = self.blueprints[user_key]
-
-        self.blueprints = blueprints
 
     def _init_spectral_model(self):
-        wave_grid = self.parser.estimate_wavelength_solution(self.data[0])
-        self.spectral_model = IterativeSpectralForwardModel(self.data, self.blueprints, self.order_num, self.sregion, self.model_resolution, self.templates_path, wave_grid)
-        self.stellar_templates[0] = np.copy(self.spectral_model.templates_dict["star"])
+        self.spectral_model._init_templates(self.data)
+        if self.spectral_model.star is not None and not self.spectral_model.star.from_flat:
+            self.stellar_templates[0] = np.copy(self.spectral_model.templates_dict["star"])
+        self.spectral_model._init_parameters(self.data)
 
     def _init_rvs(self, bc_corrs=None):
         
@@ -173,6 +167,10 @@ class IterativeSpectralRVProb(OptProblem):
             for i in range(self.n_spec):
                 self.rvs_dict["bjds"][i], self.rvs_dict["bc_vels"][i] = self.parser.compute_barycenter_corrections(self.data[i], observatory, self.target_dict)
         else:
+            bc_corrs = np.atleast_2d(bc_corrs)
+            for i in range(self.n_spec):
+                self.data[i].bjd = bc_corrs[i, 0]
+                self.data[i].bc_vel = bc_corrs[i, 1]
             self.rvs_dict["bjds"] = bc_corrs[:, 0]
             self.rvs_dict["bc_vels"] = bc_corrs[:, 1]
         
@@ -212,6 +210,77 @@ class IterativeSpectralRVProb(OptProblem):
     ##################
     #### OPTIMIZE ####
     ##################
+    
+    def compute_rvs_for_target(self):
+        """The main function to run for a given target to compute the RVs for iterative spectral rv problems.
+        """
+
+        # Start the main clock!
+        stopwatch = pcutils.StopWatch()
+        stopwatch.lap(name='ti_main')
+                
+        # Iterate over remaining stellar template generations
+        for iter_index in range(self.n_iterations):
+            
+            if iter_index == 0 and hasattr(self.spectral_model, "star") and self.spectral_model.star is not None and self.spectral_model.star.from_flat:
+                
+                print(f"Starting Iteration {iter_index + 1} of {self.n_iterations} (flat template, no RVs) ...", flush=True)
+                stopwatch.lap(name='ti_iter')
+                
+                # Fit all observations
+                self.optimize_all_observations(0)
+                
+                print(f"Finished Iteration {iter_index + 1} in {round(stopwatch.time_since(name='ti_iter')/3600, 2)} hours", flush=True)
+                
+                # Augment the template
+                if iter_index < self.n_iterations - 1:
+                    self.augment_templates(iter_index)
+            
+            else:
+                
+                print(f"Starting Iteration {iter_index + 1} of {self.n_iterations} ...", flush=True)
+                stopwatch.lap(name='ti_iter')
+
+                # Run the fit for all spectra and do a cross correlation analysis as well.
+                self.optimize_all_observations(iter_index)
+            
+                # Run the ccf for all spectra
+                self.cross_correlate_spectra(iter_index)
+            
+                # Generate the rvs for each observation
+                self.gen_nightly_rvs(iter_index)
+            
+                # Plot the rvs
+                self.plot_rvs(iter_index)
+            
+                # Save the rvs each iteration
+                self.save_rvs()
+                
+                print(f"Finished Iteration {iter_index + 1} in {round(stopwatch.time_since(name='ti_iter')/3600, 2)} hours", flush=True)
+
+                # Print RV Diagnostics
+                if self.n_spec >= 1:
+                    rvs_std = np.nanstd(self.rvs_dict['rvsfwm'][:, iter_index])
+                    print(f"  Stddev of all fwm RVs: {round(rvs_std, 4)} m/s", flush=True)
+                    rvs_std = np.nanstd(self.rvs_dict['rvsxc'][:, iter_index])
+                    print(f"  Stddev of all xc RVs: {round(rvs_std, 4)} m/s", flush=True)
+                if self.n_nights > 1:
+                    rvs_std = np.nanstd(self.rvs_dict['rvsfwm_nightly'][:, iter_index])
+                    print(f"  Stddev of all fwm nightly RVs: {round(rvs_std, 4)} m/s", flush=True)
+                    rvs_std = np.nanstd(self.rvs_dict['rvsxc_nightly'][:, iter_index])
+                    print(f"  Stddev of all xc nightly RVs: {round(rvs_std, 4)} m/s", flush=True)
+                    
+                # Augment the template
+                if iter_index < self.n_iterations - 1:
+                    self.augment_templates(iter_index)
+                
+
+        # Save forward model outputs
+        print("Saving results ... ", flush=True)
+        self.save_to_pickle()
+        
+        # End the clock!
+        print(f"Completed order {self.order_num} Runtime: {round(stopwatch.time_since(name='ti_main') / 3600, 2)} hours", flush=True)
         
     def optimize_all_observations(self, iter_index):
             
@@ -252,7 +321,7 @@ class IterativeSpectralRVProb(OptProblem):
         rvsfwm = np.full(self.n_spec, np.nan)
         for ispec in range(self.n_spec):
             pbest = self.opt_results[ispec, iter_index]["pbest"]
-            true_star_vel_tdb = pbest[self.spectral_model.models_dict["star"].par_names[0]].value + self.data[ispec].bc_vel
+            true_star_vel_tdb = pbest[self.spectral_model.star.par_names[0]].value + self.data[ispec].bc_vel
             rvsfwm[ispec] = true_star_vel_tdb
         self.rvs_dict["rvsfwm"][:, iter_index] = rvsfwm
         
@@ -261,36 +330,41 @@ class IterativeSpectralRVProb(OptProblem):
             
     @staticmethod
     def optimize_and_plot_observation(p0, data, spectral_model, obj, optimizer, iter_index, output_path, tag, star_name, verbose):
+        
+        if data.is_good:
             
-        # Time the fit
-        stopwatch = pcutils.StopWatch()
+            # Time the fit
+            stopwatch = pcutils.StopWatch()
         
-        # Sanity lock parameters
-        p0.sanity_lock()
+            # Sanity lock parameters
+            p0.sanity_lock()
         
-        # Initialize model
-        spectral_model.initialize(p0, data, iter_index)
+            # Initialize model
+            spectral_model.initialize(p0, data, iter_index)
         
-        # Store the objective with the model
-        spectral_model.obj = obj
+            # Store the objective with the model
+            spectral_model.obj = obj
         
-        # Initialize objective
-        obj.initialize(spectral_model)
-        
-        # Initialize optimizer
-        optimizer.initialize(obj)
-        
-        # Fit the observation
-        opt_result = optimizer.optimize()
-        
-        # Print diagnostics
-        print(f"Fit spectrum {data.spec_num} in {round((stopwatch.time_since())/60, 2)} min", flush=True)
-        if verbose:
-            print(f" RMS = {round(opt_result['fbest'], 3)}", flush=True)
-            print(f" Best Fit Parameters:\n{spectral_model.summary(opt_result['pbest'])}", flush=True)
+            # Initialize objective
+            obj.initialize(spectral_model)
+            
+            # Initialize optimizer
+            optimizer.initialize(obj)
+            
+            # Fit the observation
+            opt_result = optimizer.optimize()
+            
+            # Print diagnostics
+            print(f"Fit spectrum {data.spec_num} in {round((stopwatch.time_since())/60, 2)} min", flush=True)
+            if verbose:
+                print(f" RMS = {round(opt_result['fbest'], 3)}", flush=True)
+                print(f" Best Fit Parameters:\n{spectral_model.summary(opt_result['pbest'])}", flush=True)
 
-        # Plot
-        IterativeSpectralRVProb.plot_spectral_model(opt_result["pbest"], data, spectral_model, iter_index, output_path, tag, star_name)
+            # Plot
+            IterativeSpectralRVProb.plot_spectral_model(opt_result["pbest"], data, spectral_model, iter_index, output_path, tag, star_name)
+            
+        else:
+            opt_result = dict(pbest=p0.gen_nan_pars(), fbest=np.nan, fcalls=np.nan)
         
         # Return result
         return opt_result
@@ -355,37 +429,37 @@ class IterativeSpectralRVProb(OptProblem):
         plt.plot(wave_data_nm[flagged_inds], residuals[flagged_inds], color="maroon", alpha=0.8, marker='X', markersize=4, lw=0)
         
         # LSF
-        lsf = spectral_model.models_dict['lsf'].build(pars=pars)
+        lsf = spectral_model.lsf.build(pars=pars)
         
         # Star
-        if "star" in spectral_model.models_dict:
+        if spectral_model.star is not None:
             
             # Initial star
-            if not spectral_model.models_dict["star"].from_flat and iter_index != 0:
-                star_wave = spectral_model.models_dict["star"].initial_template[:, 0]
-                star_flux = spectral_model.models_dict["star"].initial_template[:, 1]
-                star_flux = pcmath.doppler_shift(star_wave, pars[spectral_model.models_dict["star"].par_names[0]].value, wave_out=spectral_model.model_wave, flux=star_flux, interp="cspline", kind="exp")
-                star_flux = spectral_model.models_dict['lsf'].convolve_flux(star_flux, lsf=lsf)
+            if not spectral_model.star.from_flat and iter_index != 0:
+                star_wave = spectral_model.star.initial_template[:, 0]
+                star_flux = spectral_model.star.initial_template[:, 1]
+                star_flux = pcmath.doppler_shift(star_wave, pars[spectral_model.star.par_names[0]].value, wave_out=spectral_model.model_wave, flux=star_flux, interp="cspline", kind="exp")
+                star_flux = spectral_model.lsf.convolve_flux(star_flux, lsf=lsf)
                 star_flux = pcmath.cspline_interp(spectral_model.model_wave, star_flux, wave_data)
                 plt.plot(wave_data_nm, star_flux - 1.2, label='Initial Star', lw=0.8, color='aqua', alpha=0.5)
             
             # Current star
-            star_flux = spectral_model.models_dict['star'].build(pars, spectral_model.templates_dict['star'], spectral_model.model_wave)
-            star_flux = spectral_model.models_dict['lsf'].convolve_flux(star_flux, lsf=lsf)
+            star_flux = spectral_model.star.build(pars, spectral_model.templates_dict['star'], spectral_model.model_wave)
+            star_flux = spectral_model.lsf.convolve_flux(star_flux, lsf=lsf)
             star_flux = pcmath.cspline_interp(spectral_model.model_wave, star_flux, wave_data)
             plt.plot(wave_data_nm, star_flux - 1.2, label='Current Star', lw=0.8, color='deeppink', alpha=0.8)
         
         # Tellurics
-        if 'tellurics' in spectral_model.models_dict:
-            tell_flux = spectral_model.models_dict['tellurics'].build(pars, spectral_model.templates_dict['tellurics'], spectral_model.model_wave)
-            tell_flux = spectral_model.models_dict['lsf'].convolve_flux(tell_flux, lsf=lsf)
+        if spectral_model.tellurics is not None:
+            tell_flux = spectral_model.tellurics.build(pars, spectral_model.templates_dict['tellurics'], spectral_model.model_wave)
+            tell_flux = spectral_model.lsf.convolve_flux(tell_flux, lsf=lsf)
             tell_flux = pcmath.cspline_interp(spectral_model.model_wave, tell_flux, wave_data)
             plt.plot(wave_data_nm, tell_flux - 1.2, label='Tellurics', lw=0.8, color='indigo', alpha=0.2)
         
         # Gas Cell
-        if 'gas_cell' in spectral_model.models_dict:
-            gas_flux = spectral_model.models_dict['gas_cell'].build(pars, spectral_model.templates_dict['gas_cell'], spectral_model.model_wave)
-            gas_flux = spectral_model.models_dict['lsf'].convolve_flux(gas_flux, lsf=lsf)
+        if spectral_model.gas_cell is not None:
+            gas_flux = spectral_model.gas_cell.build(pars, spectral_model.templates_dict['gas_cell'], spectral_model.model_wave)
+            gas_flux = spectral_model.lsf.convolve_flux(gas_flux, lsf=lsf)
             gas_flux = pcmath.cspline_interp(spectral_model.model_wave, gas_flux, wave_data)
             plt.plot(wave_data_nm, gas_flux - 1.2, label='Gas Cell', lw=0.8, color='green', alpha=0.2)
         
@@ -405,13 +479,13 @@ class IterativeSpectralRVProb(OptProblem):
         plt.ylabel("Norm. flux", fontsize=10)
         
         # The title of each chunk
-        plt.title(f"{star_name.replace('_', ' ')}, Order {spectral_model.order_num}, Iteration {iter_index + 1}", fontsize=10)
+        plt.title(f"{star_name.replace('_', ' ')}, Order {data.order_num}, Iteration {iter_index + 1}", fontsize=10)
         
         # Tight layout
         plt.tight_layout()
         
         # Save figure
-        fname = f"{output_path}Order{spectral_model.order_num}{os.sep}ForwardModels{os.sep}{tag}_data_model_spec{data.spec_num}_ord{spectral_model.order_num}_iter{iter_index + 1}.png"
+        fname = f"{output_path}Order{data.order_num}{os.sep}ForwardModels{os.sep}{tag}_data_model_spec{data.spec_num}_ord{data.order_num}_iter{iter_index + 1}.png"
         fig.savefig(fname)
         plt.close()
             
@@ -443,10 +517,13 @@ class IterativeSpectralRVProb(OptProblem):
             ccf_results = Parallel(n_jobs=self.n_cores, verbose=0, batch_size=1)(delayed(self.cross_correlate_observation)(p0s[ispec], self.data[ispec], self.spectral_model, iter_index) for ispec in range(self.n_spec))
             
             for ispec in range(self.n_spec):
-                self.rvs_dict['rvsxc'][ispec, iter_index] = ccf_results[ispec][0]
-                self.rvs_dict['uncxc'][ispec, iter_index] = ccf_results[ispec][1]
-                self.rvs_dict['bis'][ispec, iter_index] = ccf_results[ispec][2]
-                self.rvs_dict['xcorrs'][ispec, iter_index] = np.array([ccf_results[ispec][3], ccf_results[ispec][4]]).T
+                if np.isfinite(ccf_results[ispec][0]):
+                    self.rvs_dict['rvsxc'][ispec, iter_index] = ccf_results[ispec][0]
+                    self.rvs_dict['uncxc'][ispec, iter_index] = ccf_results[ispec][1]
+                    self.rvs_dict['bis'][ispec, iter_index] = ccf_results[ispec][2]
+                    self.rvs_dict['xcorrs'][ispec, iter_index] = np.array([ccf_results[ispec][3], ccf_results[ispec][4]]).T
+                else:
+                    self.data[ispec].is_good = False
             
         else:
             
@@ -456,11 +533,13 @@ class IterativeSpectralRVProb(OptProblem):
                 p0 = self.opt_results[ispec, iter_index]["pbest"]
                     
                 ccf_results = self.cross_correlate_observation(p0, self.data[ispec], self.spectral_model, iter_index)
-        
-                self.rvs_dict['rvsxc'][ispec, iter_index] = ccf_results[0]
-                self.rvs_dict['uncxc'][ispec, iter_index] = ccf_results[1]
-                self.rvs_dict['bis'][ispec, iter_index] = ccf_results[2]
-                self.rvs_dict['xcorrs'][ispec, iter_index] = np.array([ccf_results[3], ccf_results[4]]).T
+                if np.isfinite(ccf_results[0]):
+                    self.rvs_dict['rvsxc'][ispec, iter_index] = ccf_results[0]
+                    self.rvs_dict['uncxc'][ispec, iter_index] = ccf_results[1]
+                    self.rvs_dict['bis'][ispec, iter_index] = ccf_results[2]
+                    self.rvs_dict['xcorrs'][ispec, iter_index] = np.array([ccf_results[3], ccf_results[4]]).T
+                else:
+                    self.data[ispec].is_good = False
                 
         print('Cross Correlation Finished in ' + str(round((stopwatch.time_since())/60, 3)) + ' min ', flush=True)
     
@@ -561,13 +640,18 @@ class IterativeSpectralRVProb(OptProblem):
     @staticmethod
     def cross_correlate_observation(p0, data, spectral_model, iter_index):
         
-        # Initialize
-        spectral_model.initialize(p0, data, iter_index)
+        if data.is_good:
         
-        # Run the CCF
-        ccf_result = pcrvcalc.brute_force_ccf(p0, spectral_model, iter_index)
-
-        # Return ccf result
+            # Initialize
+            spectral_model.initialize(p0, data, iter_index)
+        
+            # Run the CCF
+            ccf_result = pcrvcalc.brute_force_ccf(p0, spectral_model, iter_index)
+            
+        else:
+            
+            ccf_result = np.nan, np.nan, np.nan, np.full(400, np.nan), np.full(400, np.nan)
+            
         return ccf_result
     
 
@@ -620,6 +704,22 @@ class IterativeSpectralRVProb(OptProblem):
     def p0(self):
         return self.spectral_model.p0
     
+    @property
+    def n_iterations(self):
+        return self.spectral_model.n_iterations
+    
+    @property
+    def model_resolution(self):
+        return self.spectral_model.model_resolution
+    
+    @property
+    def crop_pix(self):
+        return self.spectral_model.crop_pix
+    
+    @property
+    def order_num(self):
+        return self.spectral_model.order_num
+        
     def __repr__(self):
         s = repr(self.spectral_model)
         s += f"{repr(self.optimizer)}\n"

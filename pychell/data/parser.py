@@ -1,31 +1,49 @@
+# Base Python
+import warnings
+import glob
+import os
+import importlib
+import copy
+import sys
+import pickle
+
 # Import the barycorrpy module
 try:
     from barycorrpy import get_BC_vel
     from barycorrpy.utc_tdb import JDUTC_to_BJDTDB
 except:
-    pass
+    warnings.warn("Could not import barycorrpy")
+
+# Astropy
 from astropy.time import Time
-import sklearn.cluster
-import glob
-import numpy as np
-import os
-import importlib
-import warnings
-import copy
-import pychell.data as pcdata
 from astropy.io import fits
-import sys
 from astropy.coordinates import SkyCoord
-import pychell.maths as pcmath
 import astropy.units as units
 
+# Maths
+import sklearn.cluster
+import numpy as np
+
+# Pychell
+import pychell.data as pcdata
+import pychell.maths as pcmath
+
+
 class DataParser:
+    """Base class for parsing/generating information from spectrograph specific data files.
+    """
     
     #####################
     #### CONSTRUCTOR ####
     #####################
     
     def __init__(self, data_input_path, output_path=None):
+        """Construct a parser object.
+
+        Args:
+            data_input_path (str): The full path to the data to be parsed.
+            output_path (str, optional): The output path for writing any calibration files, only used for the reduce module. Defaults to None.
+        """
         self.data_input_path = data_input_path
         self.output_path = output_path
     
@@ -33,7 +51,7 @@ class DataParser:
     #### CATEGORIZE RAW DATA ####
     #############################
     
-    def categorize_raw_data(self, config):
+    def categorize_raw_data(self):
         # Allowed entries in data_dict:
         # flats, darks, bias
         # master_flats, master_darks, master_bias
@@ -200,20 +218,16 @@ class DataParser:
     #########################
     
     def correct_readmath(self, data, data_image):
-        # Corrects NDRs - Number of dynamic reads, or Non-destructive reads.
+        # Corrects NDRs - Number of dynamic reads, or Non-destructive reads, take your pick.
         # This reduces the read noise by sqrt(NDR)
-        if 'NDR' in data.header:
-            data_image /= float(data.header['NDR'])
-        return data_image
+        if hasattr(data, "header"):
+            if 'NDR' in data.header:
+                data_image /= float(data.header['NDR'])
     
-    def save_reduced_orders(self, data, reduced_orders):
-        fname = self.gen_reduced_spectra_filename(data)
-        hdu = fits.PrimaryHDU(reduced_orders, header=data.header)
+    def save_reduced_orders(self, data, reduced_data):
+        fname = f"{self.output_path}spectra{os.sep}{data.base_input_file_noext}_{data.target}_reduced.fits"
+        hdu = fits.PrimaryHDU(reduced_data, header=data.header)
         hdu.writeto(fname, overwrite=True)
-
-    def gen_reduced_spectra_filename(self, data):
-        fname = f"{self.output_path}{spectra}{os.sep}{data.base_input_file_noext}_{data.target}_reduced.fits"
-        return fname
     
     ###################################
     #### BARYCENTENTER CORRECTIONS ####

@@ -135,7 +135,7 @@ class RVProblem(BayesianProblem):
     #### STANDARD OPTIMIZATION METHODS ####
     #######################################
     
-    def sample(self, *args, save=True, **kwargs):
+    def run_mcmc(self, *args, save=True, **kwargs):
         """Runs the mcmc.
 
         Returns:
@@ -145,24 +145,21 @@ class RVProblem(BayesianProblem):
         Returns:
             dict: A dictionary with the mcmc results.
         """
-        mcmc_result = super().sample(*args, **kwargs)
+        mcmc_result = super().run_mcmc(*args, **kwargs)
         if save:
             fname = self.output_path + self.star_name.replace(' ', '_') + '_mcmc_results_' + pcutils.gendatestr(time=True) + "_" + self.tag + '.pkl'
             with open(fname, 'wb') as f:
                 pickle.dump(mcmc_result, f)
         return mcmc_result
     
-    def optimize(self, *args, save=True, **kwargs):
+    def run_mapfit(self, save=True):
         """Runs the optimizer.
-
-        Args:
-            *args: Any args.
-            **kwargs: Any keyword args.
             
         Returns:
             dict: A dictionary with the optimize results.
         """
-        map_result = super().optimize(*args, **kwargs)
+        self.initialize()
+        map_result = self.optimizer.optimize()
         if save:
             fname = f"{self.output_path}{self.star_name.replace(' ', '_')}_map_results_{pcutils.gendatestr(time=True)}_{self.tag}.pkl"
             with open(fname, 'wb') as f:
@@ -252,7 +249,7 @@ class RVProblem(BayesianProblem):
         # Plot the the binned data.
         ss = np.argsort(phases_data_all)
         phases_data_all, rvs_data_all, unc_data_all = phases_data_all[ss], rvs_data_all[ss], unc_data_all[ss]
-        phases_binned, rvs_binned, unc_binned = planetmath.bin_phased_rvs(phases_data_all, rvs_data_all, unc_data_all, window=0.1)
+        phases_binned, rvs_binned, unc_binned = planetmath.bin_phased_rvs(phases_data_all, rvs_data_all, unc_data_all, nbins=10)
         fig.add_trace(plotly.graph_objects.Scatter(x=phases_binned,
                                                    y=rvs_binned,
                                                    error_y=dict(array=unc_binned),
@@ -394,8 +391,12 @@ class RVProblem(BayesianProblem):
                     label = f"<b>{noise_label.replace('_', ' ')}</b>"
                         
                     # Plot the actual GP
+                    for instname in like.model.data:
+                        if instname in noise_label:
+                            _instname = instname
+                            break
                     fig.add_trace(plotly.graph_objects.Scatter(x=tt, y=gp,
-                                                                line=dict(width=0.8, color=pcutils.csscolor_to_rgba(pcutils.PLOTLY_COLORS[color_index], a=0.6)),
+                                                                line=dict(width=0.8, color=pcutils.hex_to_rgba(self.color_map[_instname], a=0.6)),
                                                                 name=label, showlegend=False),
                                     row=1, col=1)
                     
@@ -403,8 +404,8 @@ class RVProblem(BayesianProblem):
                     fig.add_trace(plotly.graph_objects.Scatter(x=np.concatenate([tt, tt[::-1]]),
                                                                 y=np.concatenate([gp_upper, gp_lower[::-1]]),
                                                                 fill='toself',
-                                                                line=dict(color=pcutils.csscolor_to_rgba(pcutils.PLOTLY_COLORS[color_index], a=0.6), width=1),
-                                                                fillcolor=pcutils.csscolor_to_rgba(pcutils.PLOTLY_COLORS[color_index], a=0.6),
+                                                                line=dict(color=pcutils.hex_to_rgba(self.color_map[_instname], a=0.6), width=1),
+                                                                fillcolor=pcutils.hex_to_rgba(self.color_map[_instname], a=0.5),
                                                                 name=label, showlegend=True),
                                     row=1, col=1)
                     color_index += 1

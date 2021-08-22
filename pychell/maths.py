@@ -25,6 +25,23 @@ import numba
 import numba.types as nt
 from llc import jit_filter_function
 
+#@njit(nogil=True)
+def intersect1d(x, y):
+    result = []
+    for xx in x:
+        for yy in y:
+            if xx == yy:
+                result.append(xx)
+    return np.array(result, dtype=int)
+
+#@njit
+def where_good1d(*arrays):
+    n_arrays = len(arrays)
+    good = np.where(np.isfinite(arrays[0]))[0]
+    for i in range(1, n_arrays):
+        good = intersect1d(good, np.where(np.isfinite(arrays[i]))[0])
+    return good
+
 def compute_R2_stat(ydata, ymodel, w=None):
     """Computes the weighted R2 stat.
 
@@ -1261,3 +1278,29 @@ def shiftint1d(x, n, cval=np.nan):
 def lorentz(x, amp, mu, fwhm):
     xx = (x - mu) / (fwhm / 2)
     return amp / (1 + xx**2)
+
+
+def poly_filter(y, width, poly_order):
+    width = int(width)
+    assert width > poly_order
+    assert width % 2 == 1
+    nx = len(y)
+    x = np.arange(nx).astype(int)
+    window_arr = np.arange(width)
+    y_out = np.full(nx, np.nan)
+    for i in range(nx):
+        ilow = int(np.max([0, np.ceil(i - width / 2)]))
+        ihigh = int(np.min([np.floor(i + width / 2), nx - 1]))
+        good = np.where(np.isfinite(y[ilow:ihigh + 1]))[0]
+        if good.size < poly_order + 1:
+            continue
+        xx, yy = x[ilow:ihigh + 1][good], y[ilow:ihigh + 1][good]
+        pfit = np.polyfit(xx, yy, poly_order)
+        y_out[i] = np.polyval(pfit, x[i])
+    good = np.where(np.isfinite(y))[0]
+    ilow = np.min(good)
+    ihigh = np.max(good)
+    y_out[0:ilow] = np.nan
+    y_out[ihigh + 1:] = np.nan
+    return y_out
+        

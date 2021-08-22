@@ -135,7 +135,7 @@ class RawImage(Echellogram):
         return self.parser.parse_image_header(self)
     
     def __repr__(self):
-        return f"Raw Echellogram: {self.base_input_file}"
+        return self.base_input_file
 
 class MasterCalibImage(Echellogram):
     
@@ -167,12 +167,6 @@ class ImageMap(Echellogram):
         
         # The source for the image map (ie, slit flat, fiber flat)
         self.source = source
-        
-        # The algorithm
-        if type(order_map_fun) is str:
-            self.order_map_fun = getattr(pcomap, order_map_fun)
-        else:
-            self.order_map_fun = order_map_fun
         
         # The parser
         self.parser = parser
@@ -234,18 +228,14 @@ class SpecData1d(SpecData):
         
         # Parse
         self.parse()
-        
-    @classmethod
-    def from_forward_model(cls, input_file, forward_model):
-        return cls(input_file, forward_model.order_num, forward_model.parser, forward_model.crop_data_pix)
 
     def parse(self):
         
         # Parse the data
         self.parser.parse_spec1d(self)
         
-        # Normalize to 99th percentile
-        medflux = pcmath.weighted_median(self.flux, percentile=0.99)
+        # Normalize to 98th percentile
+        medflux = pcmath.weighted_median(self.flux, percentile=0.98)
         self.flux /= medflux
         self.flux_unc /= medflux
         
@@ -283,6 +273,12 @@ class SpecData1d(SpecData):
             self.flux[bad] = np.nan
             self.flux_unc[bad] = np.nan
             self.mask[bad] = 0
+            
+        # Check if 1d spectrum is even worth using
+        if np.nansum(self.mask) < self.mask.size / 4:
+            self.is_good = False
+        else:
+            self.is_good = True
             
   
     def __repr__(self):
